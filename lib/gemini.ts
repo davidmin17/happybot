@@ -43,7 +43,7 @@ export async function generateResponse(
   try {
     const client = getGeminiClient();
     const model = client.getGenerativeModel({
-      model: "gemini-3-pro-preview",
+      model: "gemini-3-pro",
       systemInstruction: SYSTEM_PROMPT,
     });
 
