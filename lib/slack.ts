@@ -25,6 +25,38 @@ export async function sendSlackMessage(
   }
 }
 
+// 스레드 메시지 가져오기
+export interface SlackMessage {
+  user: string;
+  text: string;
+  ts: string;
+  bot_id?: string;
+}
+
+export async function getThreadMessages(
+  channel: string,
+  threadTs: string
+): Promise<SlackMessage[]> {
+  const response = await fetch(
+    `https://slack.com/api/conversations.replies?channel=${channel}&ts=${threadTs}&limit=20`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      },
+    }
+  );
+
+  const data = await response.json();
+
+  if (!data.ok) {
+    console.error("Slack API error:", data.error);
+    return [];
+  }
+
+  return data.messages || [];
+}
+
 // 멘션에서 사용자 메시지 추출 (봇 멘션 제거)
 export function extractMessage(text: string, botUserId: string): string {
   // <@U12345> 형태의 멘션 제거

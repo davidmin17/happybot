@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateResponse } from "@/lib/openai";
-import { sendSlackMessage, extractMessage, SlackEvent } from "@/lib/slack";
+import { generateResponse, ChatMessage } from "@/lib/openai";
+import {
+  sendSlackMessage,
+  extractMessage,
+  getThreadMessages,
+  SlackEvent,
+  SlackMessage,
+} from "@/lib/slack";
 
 // 중복 이벤트 방지를 위한 Set (메모리 저장)
 const processedEvents = new Set<string>();
@@ -20,6 +26,32 @@ export async function GET() {
   });
 }
 
+// 스레드 메시지를 OpenAI 대화 형식으로 변환
+function convertToConversationHistory(
+  messages: SlackMessage[],
+  botUserId: string,
+  currentTs: string
+): ChatMessage[] {
+  const history: ChatMessage[] = [];
+
+  for (const msg of messages) {
+    // 현재 메시지는 제외 (별도로 처리)
+    if (msg.ts === currentTs) continue;
+
+    const cleanText = extractMessage(msg.text, botUserId);
+    if (!cleanText) continue;
+
+    // 봇의 메시지인지 확인
+    if (msg.bot_id || msg.user === botUserId) {
+      history.push({ role: "assistant", content: cleanText });
+    } else {
+      history.push({ role: "user", content: cleanText });
+    }
+  }
+
+  return history;
+}
+
 // POST: Slack 이벤트 수신
 export async function POST(request: NextRequest) {
   // Slack 재시도 요청 무시
@@ -27,7 +59,9 @@ export async function POST(request: NextRequest) {
   const retryReason = request.headers.get("x-slack-retry-reason");
 
   if (retryNum) {
-    console.log(`Slack retry ignored: attempt ${retryNum}, reason: ${retryReason}`);
+    console.log(
+      `Slack retry ignored: attempt ${retryNum}, reason: ${retryReason}`
+    );
     return NextResponse.json({ ok: true, message: "Retry ignored" });
   }
 
@@ -75,15 +109,34 @@ export async function POST(request: NextRequest) {
 
         console.log(`Processing message from ${event.user}: ${userMessage}`);
 
-        // AI 응답 생성
-        const aiResponse = await generateResponse(userMessage);
+        // 스레드가 있으면 대화 기록 가져오기
+        let conversationHistory: ChatMessage[] = [];
+        const threadTs = event.thread_ts || event.ts;
+
+        if (event.thread_ts) {
+          // 기존 스레드에서 대화 중
+          const threadMessages = await getThreadMessages(
+            event.channel,
+            event.thread_ts
+          );
+          conversationHistory = convertToConversationHistory(
+            threadMessages,
+            botUserId,
+            event.ts
+          );
+          console.log(
+            `Loaded ${conversationHistory.length} messages from thread`
+          );
+        }
+
+        // AI 응답 생성 (대화 기록 포함)
+        const aiResponse = await generateResponse(
+          userMessage,
+          conversationHistory
+        );
 
         // Slack에 응답 전송 (스레드로 답장)
-        await sendSlackMessage(
-          event.channel,
-          aiResponse,
-          event.thread_ts || event.ts
-        );
+        await sendSlackMessage(event.channel, aiResponse, threadTs);
 
         console.log(`Response sent to channel ${event.channel}`);
       }

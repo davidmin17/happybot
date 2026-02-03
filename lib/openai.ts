@@ -20,16 +20,30 @@ function getOpenAIClient(): OpenAI {
   return openaiClient;
 }
 
-// AI 응답 생성
-export async function generateResponse(userMessage: string): Promise<string> {
+// 대화 메시지 타입
+export interface ChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+// AI 응답 생성 (대화 기록 포함)
+export async function generateResponse(
+  userMessage: string,
+  conversationHistory: ChatMessage[] = []
+): Promise<string> {
   try {
     const openai = getOpenAIClient();
+
+    // 메시지 구성: 시스템 프롬프트 + 대화 기록 + 현재 메시지
+    const messages: ChatMessage[] = [
+      { role: "system", content: SYSTEM_PROMPT },
+      ...conversationHistory,
+      { role: "user", content: userMessage },
+    ];
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userMessage },
-      ],
+      messages,
       max_tokens: 1000,
       temperature: 0.8,
     });
