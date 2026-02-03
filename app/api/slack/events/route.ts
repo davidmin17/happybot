@@ -1,0 +1,100 @@
+import { NextRequest, NextResponse } from "next/server";
+import { generateResponse } from "@/lib/openai";
+import { sendSlackMessage, extractMessage, SlackEvent } from "@/lib/slack";
+
+// 중복 이벤트 방지를 위한 Set (메모리 저장)
+const processedEvents = new Set<string>();
+
+// 오래된 이벤트 ID 정리 (메모리 누수 방지)
+const EVENT_EXPIRY_MS = 60 * 1000; // 1분
+setInterval(() => {
+  processedEvents.clear();
+}, EVENT_EXPIRY_MS);
+
+// GET: 헬스체크
+export async function GET() {
+  return NextResponse.json({
+    status: "ok",
+    message: "해피봇이 살아있어요! 🎉",
+    timestamp: new Date().toISOString(),
+  });
+}
+
+// POST: Slack 이벤트 수신
+export async function POST(request: NextRequest) {
+  // Slack 재시도 요청 무시
+  const retryNum = request.headers.get("x-slack-retry-num");
+  const retryReason = request.headers.get("x-slack-retry-reason");
+
+  if (retryNum) {
+    console.log(`Slack retry ignored: attempt ${retryNum}, reason: ${retryReason}`);
+    return NextResponse.json({ ok: true, message: "Retry ignored" });
+  }
+
+  try {
+    const body: SlackEvent = await request.json();
+
+    // URL Verification (Slack 앱 설정 시 필요)
+    if (body.type === "url_verification" && body.challenge) {
+      return NextResponse.json({ challenge: body.challenge });
+    }
+
+    // 이벤트 콜백 처리
+    if (body.type === "event_callback" && body.event) {
+      const { event, event_id } = body;
+
+      // 중복 이벤트 방지
+      if (event_id && processedEvents.has(event_id)) {
+        console.log(`Duplicate event ignored: ${event_id}`);
+        return NextResponse.json({ ok: true, message: "Duplicate ignored" });
+      }
+
+      if (event_id) {
+        processedEvents.add(event_id);
+      }
+
+      // app_mention 이벤트 처리
+      if (event.type === "app_mention") {
+        // 봇 자신의 메시지는 무시
+        const botUserId = process.env.SLACK_BOT_USER_ID || "";
+        if (event.user === botUserId) {
+          return NextResponse.json({ ok: true });
+        }
+
+        // 사용자 메시지 추출
+        const userMessage = extractMessage(event.text, botUserId);
+
+        if (!userMessage) {
+          await sendSlackMessage(
+            event.channel,
+            "뭐라고? 다시 말해줘! 🤔",
+            event.thread_ts || event.ts
+          );
+          return NextResponse.json({ ok: true });
+        }
+
+        console.log(`Processing message from ${event.user}: ${userMessage}`);
+
+        // AI 응답 생성
+        const aiResponse = await generateResponse(userMessage);
+
+        // Slack에 응답 전송 (스레드로 답장)
+        await sendSlackMessage(
+          event.channel,
+          aiResponse,
+          event.thread_ts || event.ts
+        );
+
+        console.log(`Response sent to channel ${event.channel}`);
+      }
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    console.error("Error processing Slack event:", error);
+    return NextResponse.json(
+      { error: "Internal server error" },
+      { status: 500 }
+    );
+  }
+}

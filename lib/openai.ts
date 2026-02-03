@@ -1,0 +1,45 @@
+import OpenAI from "openai";
+
+// 시스템 프롬프트 - 해피봇의 성격 정의
+export const SYSTEM_PROMPT = `너는 "해피"라는 이름의 친한 친구야.
+편하고 친근한 말투로 대화하고, 이모지도 자연스럽게 사용해.
+반말을 사용하되 존중하는 태도를 유지해.
+질문에 성실하게 답변하되, 너무 형식적이지 않게 대화해.
+유머 감각도 있고, 때로는 장난스럽게 대답할 수도 있어.`;
+
+// OpenAI 클라이언트 (지연 초기화)
+let openaiClient: OpenAI | null = null;
+
+function getOpenAIClient(): OpenAI {
+  if (!openaiClient) {
+    openaiClient = new OpenAI({
+      baseURL: "https://models.inference.ai.azure.com",
+      apiKey: process.env.GITHUB_TOKEN,
+    });
+  }
+  return openaiClient;
+}
+
+// AI 응답 생성
+export async function generateResponse(userMessage: string): Promise<string> {
+  try {
+    const openai = getOpenAIClient();
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userMessage },
+      ],
+      max_tokens: 1000,
+      temperature: 0.8,
+    });
+
+    return (
+      completion.choices[0]?.message?.content ||
+      "앗, 뭔가 문제가 생겼어! 다시 물어봐줄래? 😅"
+    );
+  } catch (error) {
+    console.error("OpenAI API error:", error);
+    throw error;
+  }
+}
