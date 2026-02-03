@@ -25,7 +25,7 @@ export async function generateResponse(userMessage: string): Promise<string> {
   try {
     const openai = getOpenAIClient();
     const completion = await openai.chat.completions.create({
-      model: "openai/gpt-5-mini",
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: userMessage },
