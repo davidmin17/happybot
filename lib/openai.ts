@@ -13,7 +13,7 @@ let openaiClient: OpenAI | null = null;
 function getOpenAIClient(): OpenAI {
   if (!openaiClient) {
     openaiClient = new OpenAI({
-      baseURL: "https://models.inference.ai.azure.com",
+      baseURL: "https://models.github.ai/inference",
       apiKey: process.env.GITHUB_TOKEN,
     });
   }
@@ -42,7 +42,7 @@ export async function generateResponse(
     ];
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
+      model: "openai/gpt-4o-mini",
       messages,
       max_tokens: 1000,
       temperature: 0.8,
@@ -52,8 +52,18 @@ export async function generateResponse(
       completion.choices[0]?.message?.content ||
       "앗, 뭔가 문제가 생겼어! 다시 물어봐줄래? 😅"
     );
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("OpenAI API error:", error);
+
+    // 콘텐츠 필터 에러 처리
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      (error as { code?: string }).code === "content_filter"
+    ) {
+      return "음... 그 질문은 좀 민감한 것 같아서 대답하기 어려워 😅 다른 얘기 하자!";
+    }
+
     throw error;
   }
 }
