@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { generateResponse, ChatMessage } from "@/lib/gemini";
+import { generateResponse, ChatMessage, GenerateResponseOptions } from "@/lib/gemini";
 import {
   sendSlackMessage,
   extractMessage,
   getThreadMessages,
+  getChannelHistory,
   SlackEvent,
   SlackMessage,
 } from "@/lib/slack";
@@ -26,7 +27,7 @@ export async function GET() {
   });
 }
 
-// 스레드 메시지를 OpenAI 대화 형식으로 변환
+// 스레드 메시지를 대화 형식으로 변환
 function convertToConversationHistory(
   messages: SlackMessage[],
   botUserId: string,
@@ -50,6 +51,31 @@ function convertToConversationHistory(
   }
 
   return history;
+}
+
+// 채널 메시지를 컨텍스트 문자열로 변환
+function convertToChannelContext(
+  messages: SlackMessage[],
+  botUserId: string,
+  currentThreadTs?: string
+): string {
+  const contextLines: string[] = [];
+
+  for (const msg of messages) {
+    // 현재 스레드의 메시지는 제외 (스레드 히스토리에서 별도 처리)
+    if (currentThreadTs && msg.thread_ts === currentThreadTs) continue;
+    // 스레드 답글은 제외 (메인 채널 대화만)
+    if (msg.thread_ts && msg.ts !== msg.thread_ts) continue;
+
+    const cleanText = extractMessage(msg.text, botUserId);
+    if (!cleanText) continue;
+
+    // 봇의 메시지인지 확인
+    const speaker = msg.bot_id || msg.user === botUserId ? "해피" : "사용자";
+    contextLines.push(`${speaker}: ${cleanText}`);
+  }
+
+  return contextLines.join("\n");
 }
 
 // POST: Slack 이벤트 수신
@@ -129,11 +155,23 @@ export async function POST(request: NextRequest) {
           );
         }
 
-        // AI 응답 생성 (대화 기록 포함)
-        const aiResponse = await generateResponse(
-          userMessage,
-          conversationHistory
+        // 채널의 최근 대화 가져오기
+        const channelMessages = await getChannelHistory(event.channel, 30);
+        const channelContext = convertToChannelContext(
+          channelMessages,
+          botUserId,
+          event.thread_ts
         );
+        console.log(
+          `Loaded channel context: ${channelContext.length} characters`
+        );
+
+        // AI 응답 생성 (스레드 대화 기록 + 채널 컨텍스트 포함)
+        const options: GenerateResponseOptions = {
+          conversationHistory,
+          channelContext: channelContext || undefined,
+        };
+        const aiResponse = await generateResponse(userMessage, options);
 
         // Slack에 응답 전송 (스레드로 답장)
         await sendSlackMessage(event.channel, aiResponse, threadTs);

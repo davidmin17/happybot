@@ -31,6 +31,7 @@ export interface SlackMessage {
   text: string;
   ts: string;
   bot_id?: string;
+  thread_ts?: string;
 }
 
 export async function getThreadMessages(
@@ -55,6 +56,33 @@ export async function getThreadMessages(
   }
 
   return data.messages || [];
+}
+
+// 채널의 최근 메시지 가져오기
+export async function getChannelHistory(
+  channel: string,
+  limit: number = 20
+): Promise<SlackMessage[]> {
+  const response = await fetch(
+    `https://slack.com/api/conversations.history?channel=${channel}&limit=${limit}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      },
+    }
+  );
+
+  const data = await response.json();
+
+  if (!data.ok) {
+    console.error("Slack API error:", data.error);
+    return [];
+  }
+
+  // 최신순으로 오므로 시간순으로 정렬 (오래된 것 먼저)
+  const messages = data.messages || [];
+  return messages.reverse();
 }
 
 // 멘션에서 사용자 메시지 추출 (봇 멘션 제거)
