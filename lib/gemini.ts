@@ -1,7 +1,7 @@
 import { GoogleGenerativeAI, Content } from "@google/generative-ai";
 
 // 시스템 프롬프트 - 해피봇의 성격 정의
-const BASE_SYSTEM_PROMPT = `너는 "해피님"이라는 이름의 친한 친구야.
+const BASE_SYSTEM_PROMPT = `너는 "해피"이라는 이름의 친한 친구야.
 편하고 친근한 분위기이지만, 항상 존댓말로 대화해.
 이모지는 자연스럽게 사용하되, 과하지 않게 사용해.
 질문에 성실하게 답변하되, 너무 형식적이지 않게 대화해.
@@ -58,6 +58,7 @@ function convertToGeminiHistory(messages: ChatMessage[]): Content[] {
 export interface GenerateResponseOptions {
   conversationHistory?: ChatMessage[];
   channelContext?: string;
+  requesterDisplayName?: string;
 }
 
 // AI 응답 생성 (대화 기록 + 채널 컨텍스트 포함)
@@ -65,11 +66,15 @@ export async function generateResponse(
   userMessage: string,
   options: GenerateResponseOptions = {}
 ): Promise<string> {
-  const { conversationHistory = [], channelContext } = options;
+  const { conversationHistory = [], channelContext, requesterDisplayName } =
+    options;
 
   try {
     const client = getGeminiClient();
-    const systemPrompt = buildSystemPrompt(channelContext);
+    const requesterLine = requesterDisplayName
+      ? `\n\n현재 질문을 한 분은 "${requesterDisplayName}"입니다. 이름을 부를 때는 반드시 "${requesterDisplayName}"처럼 "님"을 붙여서 불러 주세요.`
+      : "";
+    const systemPrompt = buildSystemPrompt(channelContext) + requesterLine;
     const model = client.getGenerativeModel({
       model: "gemini-3-flash-preview",
       systemInstruction: systemPrompt,

@@ -25,6 +25,59 @@ export async function sendSlackMessage(
   }
 }
 
+type CachedNameEntry = { name: string; expiresAt: number };
+const userNameCache = new Map<string, CachedNameEntry>();
+const USER_NAME_TTL_MS = 10 * 60 * 1000; // 10분
+
+function getCachedUserName(userId: string): string | null {
+  const cached = userNameCache.get(userId);
+  if (!cached) return null;
+  if (Date.now() > cached.expiresAt) {
+    userNameCache.delete(userId);
+    return null;
+  }
+  return cached.name;
+}
+
+function setCachedUserName(userId: string, name: string) {
+  userNameCache.set(userId, { name, expiresAt: Date.now() + USER_NAME_TTL_MS });
+}
+
+// Slack 유저 display name 가져오기
+export async function getUserDisplayName(userId: string): Promise<string> {
+  if (!userId) return "사용자";
+
+  const cached = getCachedUserName(userId);
+  if (cached) return cached;
+
+  const response = await fetch(
+    `https://slack.com/api/users.info?user=${encodeURIComponent(userId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+      },
+    }
+  );
+
+  const data = await response.json();
+  if (!data.ok) {
+    console.error("Slack API error:", data.error);
+    return "사용자";
+  }
+
+  const profile = data.user?.profile;
+  const name =
+    profile?.display_name_normalized ||
+    profile?.display_name ||
+    data.user?.real_name_normalized ||
+    data.user?.real_name ||
+    "사용자";
+
+  setCachedUserName(userId, name);
+  return name;
+}
+
 // 스레드 메시지 가져오기
 export interface SlackMessage {
   user: string;

@@ -5,6 +5,7 @@ import {
   extractMessage,
   getThreadMessages,
   getChannelHistory,
+  getUserDisplayName,
   SlackEvent,
   SlackMessage,
 } from "@/lib/slack";
@@ -57,7 +58,8 @@ function convertToConversationHistory(
 function convertToChannelContext(
   messages: SlackMessage[],
   botUserId: string,
-  currentThreadTs?: string
+  currentThreadTs: string | undefined,
+  userNameById: Map<string, string>
 ): string {
   const contextLines: string[] = [];
 
@@ -71,11 +73,18 @@ function convertToChannelContext(
     if (!cleanText) continue;
 
     // 봇의 메시지인지 확인
-    const speaker = msg.bot_id || msg.user === botUserId ? "해피" : "사용자";
+    const isBot = msg.bot_id || msg.user === botUserId;
+    const speaker = isBot ? "해피님" : (userNameById.get(msg.user) || "사용자님");
     contextLines.push(`${speaker}: ${cleanText}`);
   }
 
   return contextLines.join("\n");
+}
+
+function ensureNim(name: string): string {
+  const trimmed = (name || "").trim();
+  if (!trimmed) return "사용자님";
+  return trimmed.endsWith("님") ? trimmed : `${trimmed}님`;
 }
 
 // POST: Slack 이벤트 수신
@@ -135,6 +144,10 @@ export async function POST(request: NextRequest) {
 
         console.log(`Processing message from ${event.user}: ${userMessage}`);
 
+        const requesterDisplayName = ensureNim(
+          await getUserDisplayName(event.user)
+        );
+
         // 스레드가 있으면 대화 기록 가져오기
         let conversationHistory: ChatMessage[] = [];
         const threadTs = event.thread_ts || event.ts;
@@ -157,10 +170,22 @@ export async function POST(request: NextRequest) {
 
         // 채널의 최근 대화 가져오기
         const channelMessages = await getChannelHistory(event.channel, 30);
+        const uniqueUserIds = Array.from(
+          new Set(
+            channelMessages
+              .map((m) => m.user)
+              .filter((u) => Boolean(u) && u !== botUserId)
+          )
+        );
+        const resolvedNames = await Promise.all(
+          uniqueUserIds.map(async (uid) => [uid, ensureNim(await getUserDisplayName(uid))] as const)
+        );
+        const userNameById = new Map<string, string>(resolvedNames);
         const channelContext = convertToChannelContext(
           channelMessages,
           botUserId,
-          event.thread_ts
+          event.thread_ts,
+          userNameById
         );
         console.log(
           `Loaded channel context: ${channelContext.length} characters`
@@ -170,6 +195,7 @@ export async function POST(request: NextRequest) {
         const options: GenerateResponseOptions = {
           conversationHistory,
           channelContext: channelContext || undefined,
+          requesterDisplayName,
         };
         const aiResponse = await generateResponse(userMessage, options);
 
