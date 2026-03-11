@@ -141,7 +141,7 @@ export async function getChannelHistory(
 // 멘션에서 사용자 메시지 추출 (봇 멘션 제거)
 export function extractMessage(text: string, botUserId: string): string {
   // <@U12345> 형태의 멘션 제거
-  return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
+  return text.replaceAll(`<@${botUserId}>`, "").trim();
 }
 
 // Slack 이벤트 타입 정의

@@ -144,32 +144,26 @@ export async function POST(request: NextRequest) {
 
         console.log(`Processing message from ${event.user}: ${userMessage}`);
 
-        const requesterDisplayName = ensureNim(
-          await getUserDisplayName(event.user)
-        );
+        // 독립적인 API 호출 병렬 처리
+        const [requesterName, threadMessages, channelMessages] = await Promise.all([
+          getUserDisplayName(event.user),
+          event.thread_ts
+            ? getThreadMessages(event.channel, event.thread_ts)
+            : Promise.resolve([] as SlackMessage[]),
+          getChannelHistory(event.channel, 30),
+        ]);
 
-        // 스레드가 있으면 대화 기록 가져오기
-        let conversationHistory: ChatMessage[] = [];
+        const requesterDisplayName = ensureNim(requesterName);
         const threadTs = event.thread_ts || event.ts;
 
-        if (event.thread_ts) {
-          // 기존 스레드에서 대화 중
-          const threadMessages = await getThreadMessages(
-            event.channel,
-            event.thread_ts
-          );
-          conversationHistory = convertToConversationHistory(
-            threadMessages,
-            botUserId,
-            event.ts
-          );
-          console.log(
-            `Loaded ${conversationHistory.length} messages from thread`
-          );
-        }
+        // 스레드 대화 기록 변환
+        const conversationHistory = event.thread_ts
+          ? convertToConversationHistory(threadMessages, botUserId, event.ts)
+          : [];
 
-        // 채널의 최근 대화 가져오기
-        const channelMessages = await getChannelHistory(event.channel, 30);
+        if (event.thread_ts) {
+          console.log(`Loaded ${conversationHistory.length} messages from thread`);
+        }
         const uniqueUserIds = Array.from(
           new Set(
             channelMessages
