@@ -79,12 +79,21 @@ export async function getUserDisplayName(userId: string): Promise<string> {
 }
 
 // 스레드 메시지 가져오기
+export interface SlackFile {
+  id: string;
+  url_private: string;
+  mimetype: string;
+  filetype: string;
+  name?: string;
+}
+
 export interface SlackMessage {
   user: string;
   text: string;
   ts: string;
   bot_id?: string;
   thread_ts?: string;
+  files?: SlackFile[];
 }
 
 export async function getThreadMessages(
@@ -144,6 +153,28 @@ export function extractMessage(text: string, botUserId: string): string {
   return text.replaceAll(`<@${botUserId}>`, "").trim();
 }
 
+// Slack 파일 다운로드 (봇 토큰 인증 필요)
+export async function downloadSlackFile(
+  url: string
+): Promise<{ data: string; mimeType: string } | null> {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${process.env.SLACK_BOT_TOKEN}`,
+    },
+  });
+
+  if (!response.ok) {
+    console.error(`Failed to download Slack file: ${response.status}`);
+    return null;
+  }
+
+  const contentType = response.headers.get("content-type") || "image/jpeg";
+  const mimeType = contentType.split(";")[0].trim();
+  const buffer = await response.arrayBuffer();
+  const data = Buffer.from(buffer).toString("base64");
+  return { data, mimeType };
+}
+
 // Slack 이벤트 타입 정의
 export interface SlackEvent {
   type: string;
@@ -155,6 +186,7 @@ export interface SlackEvent {
     ts: string;
     event_ts: string;
     thread_ts?: string;
+    files?: SlackFile[];
   };
   challenge?: string;
   event_id?: string;

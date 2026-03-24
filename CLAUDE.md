@@ -46,15 +46,17 @@ lib/
 1. Slack `app_mention` 이벤트 → `/api/slack/events` POST
 2. 중복 이벤트 필터링 (인메모리 Set, 60초마다 초기화)
 3. `x-slack-retry-num` 헤더로 재시도 요청 무시
-4. 스레드 히스토리 조회 (최대 20개)
+4. 스레드 히스토리 조회 (최대 20개) + 각 메시지의 이미지 다운로드
 5. 채널 컨텍스트 조회 (최대 30개 메시지)
-6. Gemini API로 응답 생성
-7. Slack 스레드에 답글 게시
+6. 현재 이벤트의 첨부 이미지 다운로드
+7. Gemini API로 응답 생성 (텍스트 + 이미지 멀티모달)
+8. Slack 스레드에 답글 게시
 
 ### 컨텍스트 처리
-- **스레드 히스토리**: `conversations.replies` API로 최대 20개 메시지
+- **스레드 히스토리**: `conversations.replies` API로 최대 20개 메시지 (이미지 포함)
 - **채널 컨텍스트**: 최근 30개 메시지를 시스템 프롬프트에 요약 포함
 - **유저 캐싱**: 표시 이름 10분 TTL 캐시
+- **이미지 처리**: 메시지에 첨부된 이미지를 Slack API로 다운로드 후 Gemini에 `inlineData`로 전달
 
 ### 봇 페르소나
 - 이름: 해피 (Happy)
@@ -65,7 +67,7 @@ lib/
 
 ## Slack 앱 설정
 
-**필요한 OAuth 스코프**: `app_mentions:read`, `chat:write`, `users:read`, `channels:history`
+**필요한 OAuth 스코프**: `app_mentions:read`, `chat:write`, `users:read`, `channels:history`, `files:read`
 
 **구독 이벤트**: `app_mention`
 

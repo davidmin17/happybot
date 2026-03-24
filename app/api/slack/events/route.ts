@@ -6,6 +6,7 @@ import {
   getThreadMessages,
   getChannelHistory,
   getUserDisplayName,
+  downloadSlackFile,
   SlackEvent,
   SlackMessage,
 } from "@/lib/slack";
@@ -28,27 +29,38 @@ export async function GET() {
   });
 }
 
-// 스레드 메시지를 대화 형식으로 변환
-function convertToConversationHistory(
+// 스레드 메시지를 대화 형식으로 변환 (이미지 다운로드 포함)
+async function convertToConversationHistory(
   messages: SlackMessage[],
   botUserId: string,
   currentTs: string
-): ChatMessage[] {
+): Promise<ChatMessage[]> {
   const history: ChatMessage[] = [];
 
   for (const msg of messages) {
     // 현재 메시지는 제외 (별도로 처리)
     if (msg.ts === currentTs) continue;
 
-    const cleanText = extractMessage(msg.text, botUserId);
-    if (!cleanText) continue;
+    const cleanText = extractMessage(msg.text || "", botUserId);
 
-    // 봇의 메시지인지 확인
-    if (msg.bot_id || msg.user === botUserId) {
-      history.push({ role: "assistant", content: cleanText });
-    } else {
-      history.push({ role: "user", content: cleanText });
+    // 이미지 파일 다운로드
+    const images: Array<{ mimeType: string; data: string }> = [];
+    if (msg.files) {
+      const imageFiles = msg.files.filter((f) => f.mimetype?.startsWith("image/"));
+      const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
+      for (const img of downloaded) {
+        if (img) images.push(img);
+      }
     }
+
+    if (!cleanText && images.length === 0) continue;
+
+    const role = msg.bot_id || msg.user === botUserId ? "assistant" : "user";
+    history.push({
+      role,
+      content: cleanText,
+      ...(images.length > 0 ? { images } : {}),
+    });
   }
 
   return history;
@@ -132,8 +144,9 @@ export async function POST(request: NextRequest) {
 
         // 사용자 메시지 추출
         const userMessage = extractMessage(event.text, botUserId);
+        const hasImages = (event.files || []).some((f) => f.mimetype?.startsWith("image/"));
 
-        if (!userMessage) {
+        if (!userMessage && !hasImages) {
           await sendSlackMessage(
             event.channel,
             "뭐라고? 다시 말해줘! 🤔",
@@ -142,7 +155,7 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        console.log(`Processing message from ${event.user}: ${userMessage}`);
+        console.log(`Processing message from ${event.user}: ${userMessage}${hasImages ? " [with images]" : ""}`);
 
         // 독립적인 API 호출 병렬 처리
         const [requesterName, threadMessages, channelMessages] = await Promise.all([
@@ -156,9 +169,19 @@ export async function POST(request: NextRequest) {
         const requesterDisplayName = ensureNim(requesterName);
         const threadTs = event.thread_ts || event.ts;
 
+        // 현재 이벤트의 이미지 다운로드
+        const eventImages: Array<{ mimeType: string; data: string }> = [];
+        if (event.files) {
+          const imageFiles = event.files.filter((f) => f.mimetype?.startsWith("image/"));
+          const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
+          for (const img of downloaded) {
+            if (img) eventImages.push(img);
+          }
+        }
+
         // 스레드 대화 기록 변환
         const conversationHistory = event.thread_ts
-          ? convertToConversationHistory(threadMessages, botUserId, event.ts)
+          ? await convertToConversationHistory(threadMessages, botUserId, event.ts)
           : [];
 
         if (event.thread_ts) {
@@ -185,11 +208,12 @@ export async function POST(request: NextRequest) {
           `Loaded channel context: ${channelContext.length} characters`
         );
 
-        // AI 응답 생성 (스레드 대화 기록 + 채널 컨텍스트 포함)
+        // AI 응답 생성 (스레드 대화 기록 + 채널 컨텍스트 + 이미지 포함)
         const options: GenerateResponseOptions = {
           conversationHistory,
           channelContext: channelContext || undefined,
           requesterDisplayName,
+          ...(eventImages.length > 0 ? { images: eventImages } : {}),
         };
         const aiResponse = await generateResponse(userMessage, options);
 

@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, Content } from "@google/generative-ai";
+import { GoogleGenerativeAI, Content, Part } from "@google/generative-ai";
 
 // 시스템 프롬프트 - 해피봇의 성격 정의
 const BASE_SYSTEM_PROMPT = `너는 "해피"이라는 이름의 친한 친구야.
@@ -44,14 +44,24 @@ function getGeminiClient(): GoogleGenerativeAI {
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  images?: Array<{ mimeType: string; data: string }>;
 }
 
 // ChatMessage를 Gemini Content 형식으로 변환
 function convertToGeminiHistory(messages: ChatMessage[]): Content[] {
-  return messages.map((msg) => ({
-    role: msg.role === "assistant" ? "model" : "user",
-    parts: [{ text: msg.content }],
-  }));
+  return messages.map((msg) => {
+    const parts: Part[] = [];
+    if (msg.content) parts.push({ text: msg.content });
+    if (msg.images) {
+      for (const img of msg.images) {
+        parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+      }
+    }
+    return {
+      role: msg.role === "assistant" ? "model" : "user",
+      parts,
+    };
+  });
 }
 
 // AI 응답 생성 옵션
@@ -59,6 +69,7 @@ export interface GenerateResponseOptions {
   conversationHistory?: ChatMessage[];
   channelContext?: string;
   requesterDisplayName?: string;
+  images?: Array<{ mimeType: string; data: string }>;
 }
 
 // AI 응답 생성 (대화 기록 + 채널 컨텍스트 포함)
@@ -66,7 +77,7 @@ export async function generateResponse(
   userMessage: string,
   options: GenerateResponseOptions = {}
 ): Promise<string> {
-  const { conversationHistory = [], channelContext, requesterDisplayName } =
+  const { conversationHistory = [], channelContext, requesterDisplayName, images } =
     options;
 
   try {
@@ -80,12 +91,21 @@ export async function generateResponse(
       systemInstruction: systemPrompt,
     });
 
+    // 현재 메시지 파츠 구성 (텍스트 + 이미지)
+    const messageParts: Part[] = [];
+    if (userMessage) messageParts.push({ text: userMessage });
+    if (images) {
+      for (const img of images) {
+        messageParts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+      }
+    }
+
     // 대화 기록이 있으면 채팅 세션 사용
     if (conversationHistory.length > 0) {
       const chat = model.startChat({
         history: convertToGeminiHistory(conversationHistory),
       });
-      const result = await chat.sendMessage(userMessage);
+      const result = await chat.sendMessage(messageParts);
       return (
         result.response.text() ||
         "앗, 뭔가 문제가 생긴 것 같아요. 다시 한 번만 질문해 주시겠어요? 😅"
@@ -93,7 +113,7 @@ export async function generateResponse(
     }
 
     // 단일 메시지
-    const result = await model.generateContent(userMessage);
+    const result = await model.generateContent(messageParts);
     return (
       result.response.text() ||
       "앗, 뭔가 문제가 생긴 것 같아요. 번거로우시겠지만 다시 한 번만 질문해 주시겠어요? 😅"
