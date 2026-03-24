@@ -107,10 +107,7 @@ export async function POST(request: NextRequest) {
   const retryReason = request.headers.get("x-slack-retry-reason");
 
   if (retryNum) {
-    console.log(
-      `Slack retry ignored: attempt ${retryNum}, reason: ${retryReason}`
-    );
-    return NextResponse.json({ ok: true, message: "Retry ignored" });
+    return NextResponse.json({ ok: true });
   }
 
   try {
@@ -127,8 +124,7 @@ export async function POST(request: NextRequest) {
 
       // 중복 이벤트 방지
       if (event_id && processedEvents.has(event_id)) {
-        console.log(`Duplicate event ignored: ${event_id}`);
-        return NextResponse.json({ ok: true, message: "Duplicate ignored" });
+        return NextResponse.json({ ok: true });
       }
 
       if (event_id) {
@@ -153,8 +149,6 @@ export async function POST(request: NextRequest) {
               await sendSlackMessage(event.channel, "다시 말씀해주세요.", event.thread_ts || event.ts);
               return;
             }
-
-            console.log(`Processing message from ${event.user}: ${userMessage}${hasImages ? " [with images]" : ""}`);
 
             const [requesterName, threadMessages, channelMessages] = await Promise.all([
               getUserDisplayName(event.user),
@@ -181,10 +175,6 @@ export async function POST(request: NextRequest) {
               ? await convertToConversationHistory(threadMessages, botUserId, event.ts)
               : [];
 
-            if (event.thread_ts) {
-              console.log(`Loaded ${conversationHistory.length} messages from thread`);
-            }
-
             const uniqueUserIds = Array.from(
               new Set(channelMessages.map((m) => m.user).filter((u) => Boolean(u) && u !== botUserId))
             );
@@ -193,7 +183,6 @@ export async function POST(request: NextRequest) {
             );
             const userNameById = new Map<string, string>(resolvedNames);
             const channelContext = convertToChannelContext(channelMessages, botUserId, event.thread_ts, userNameById);
-            console.log(`Loaded channel context: ${channelContext.length} characters`);
 
             // 현재 메시지에 이미지가 없으면 채널 히스토리에서 최근 이미지 가져오기
             if (eventImages.length === 0) {
@@ -207,9 +196,6 @@ export async function POST(request: NextRequest) {
               for (const img of downloaded) {
                 if (img) eventImages.push(img);
               }
-              if (eventImages.length > 0) {
-                console.log(`Loaded ${eventImages.length} images from channel history`);
-              }
             }
 
             const options: GenerateResponseOptions = {
@@ -221,7 +207,6 @@ export async function POST(request: NextRequest) {
             const aiResponse = await generateResponse(userMessage, options);
 
             await sendSlackMessage(event.channel, aiResponse, threadTs);
-            console.log(`Response sent to channel ${event.channel}`);
           } catch (error) {
             console.error("Error processing Slack event in background:", error);
           }

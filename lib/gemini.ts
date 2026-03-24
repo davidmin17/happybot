@@ -82,10 +82,11 @@ export async function generateResponse(
 
   try {
     const client = getGeminiClient();
+    const today = new Date().toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" });
     const requesterLine = requesterDisplayName
       ? `\n\n현재 질문을 한 분은 "${requesterDisplayName}"입니다. 이름을 부를 때는 반드시 "${requesterDisplayName}"처럼 "님"을 붙여서 불러 주세요.`
       : "";
-    const systemPrompt = buildSystemPrompt(channelContext) + requesterLine;
+    const systemPrompt = buildSystemPrompt(channelContext) + `\n\n오늘 날짜는 ${today}입니다.` + requesterLine;
     const model = client.getGenerativeModel({
       model: "gemini-3-flash-preview",
       systemInstruction: systemPrompt,
