@@ -167,13 +167,16 @@ export async function POST(request: NextRequest) {
             const requesterDisplayName = ensureNim(requesterName);
             const threadTs = event.thread_ts || event.ts;
 
+            console.log(`event.files: ${JSON.stringify(event.files)}`);
             const eventImages: Array<{ mimeType: string; data: string }> = [];
             if (event.files) {
               const imageFiles = event.files.filter((f) => f.mimetype?.startsWith("image/"));
+              console.log(`Image files to download: ${imageFiles.length}`);
               const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
               for (const img of downloaded) {
                 if (img) eventImages.push(img);
               }
+              console.log(`Downloaded images: ${eventImages.length}`);
             }
 
             const conversationHistory = event.thread_ts
