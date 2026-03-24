@@ -167,16 +167,14 @@ export async function POST(request: NextRequest) {
             const requesterDisplayName = ensureNim(requesterName);
             const threadTs = event.thread_ts || event.ts;
 
-            console.log(`event.files: ${JSON.stringify(event.files)}`);
+            // 현재 메시지의 이미지 다운로드
             const eventImages: Array<{ mimeType: string; data: string }> = [];
             if (event.files) {
               const imageFiles = event.files.filter((f) => f.mimetype?.startsWith("image/"));
-              console.log(`Image files to download: ${imageFiles.length}`);
               const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
               for (const img of downloaded) {
                 if (img) eventImages.push(img);
               }
-              console.log(`Downloaded images: ${eventImages.length}`);
             }
 
             const conversationHistory = event.thread_ts
@@ -196,6 +194,23 @@ export async function POST(request: NextRequest) {
             const userNameById = new Map<string, string>(resolvedNames);
             const channelContext = convertToChannelContext(channelMessages, botUserId, event.thread_ts, userNameById);
             console.log(`Loaded channel context: ${channelContext.length} characters`);
+
+            // 현재 메시지에 이미지가 없으면 채널 히스토리에서 최근 이미지 가져오기
+            if (eventImages.length === 0) {
+              const recentChannelImages = channelMessages
+                .filter((m) => m.files?.some((f) => f.mimetype?.startsWith("image/")))
+                .slice(-3); // 최근 3개 메시지
+              const channelImageFiles = recentChannelImages.flatMap(
+                (m) => m.files?.filter((f) => f.mimetype?.startsWith("image/")) ?? []
+              );
+              const downloaded = await Promise.all(channelImageFiles.map((f) => downloadSlackFile(f.url_private)));
+              for (const img of downloaded) {
+                if (img) eventImages.push(img);
+              }
+              if (eventImages.length > 0) {
+                console.log(`Loaded ${eventImages.length} images from channel history`);
+              }
+            }
 
             const options: GenerateResponseOptions = {
               conversationHistory,
