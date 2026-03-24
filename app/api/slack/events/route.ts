@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { after } from "next/server";
 import { generateResponse, ChatMessage, GenerateResponseOptions } from "@/lib/gemini";
 import {
   sendSlackMessage,
@@ -142,85 +143,71 @@ export async function POST(request: NextRequest) {
           return NextResponse.json({ ok: true });
         }
 
-        // 사용자 메시지 추출
-        const userMessage = extractMessage(event.text, botUserId);
-        const hasImages = (event.files || []).some((f) => f.mimetype?.startsWith("image/"));
+        // 백그라운드에서 처리 (Slack 3초 타임아웃 방지)
+        after(async () => {
+          try {
+            const userMessage = extractMessage(event.text, botUserId);
+            const hasImages = (event.files || []).some((f) => f.mimetype?.startsWith("image/"));
 
-        if (!userMessage && !hasImages) {
-          await sendSlackMessage(
-            event.channel,
-            "뭐라고? 다시 말해줘! 🤔",
-            event.thread_ts || event.ts
-          );
-          return NextResponse.json({ ok: true });
-        }
+            if (!userMessage && !hasImages) {
+              await sendSlackMessage(event.channel, "다시 말씀해주세요.", event.thread_ts || event.ts);
+              return;
+            }
 
-        console.log(`Processing message from ${event.user}: ${userMessage}${hasImages ? " [with images]" : ""}`);
+            console.log(`Processing message from ${event.user}: ${userMessage}${hasImages ? " [with images]" : ""}`);
 
-        // 독립적인 API 호출 병렬 처리
-        const [requesterName, threadMessages, channelMessages] = await Promise.all([
-          getUserDisplayName(event.user),
-          event.thread_ts
-            ? getThreadMessages(event.channel, event.thread_ts)
-            : Promise.resolve([] as SlackMessage[]),
-          getChannelHistory(event.channel, 30),
-        ]);
+            const [requesterName, threadMessages, channelMessages] = await Promise.all([
+              getUserDisplayName(event.user),
+              event.thread_ts
+                ? getThreadMessages(event.channel, event.thread_ts)
+                : Promise.resolve([] as SlackMessage[]),
+              getChannelHistory(event.channel, 30),
+            ]);
 
-        const requesterDisplayName = ensureNim(requesterName);
-        const threadTs = event.thread_ts || event.ts;
+            const requesterDisplayName = ensureNim(requesterName);
+            const threadTs = event.thread_ts || event.ts;
 
-        // 현재 이벤트의 이미지 다운로드
-        const eventImages: Array<{ mimeType: string; data: string }> = [];
-        if (event.files) {
-          const imageFiles = event.files.filter((f) => f.mimetype?.startsWith("image/"));
-          const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
-          for (const img of downloaded) {
-            if (img) eventImages.push(img);
+            const eventImages: Array<{ mimeType: string; data: string }> = [];
+            if (event.files) {
+              const imageFiles = event.files.filter((f) => f.mimetype?.startsWith("image/"));
+              const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
+              for (const img of downloaded) {
+                if (img) eventImages.push(img);
+              }
+            }
+
+            const conversationHistory = event.thread_ts
+              ? await convertToConversationHistory(threadMessages, botUserId, event.ts)
+              : [];
+
+            if (event.thread_ts) {
+              console.log(`Loaded ${conversationHistory.length} messages from thread`);
+            }
+
+            const uniqueUserIds = Array.from(
+              new Set(channelMessages.map((m) => m.user).filter((u) => Boolean(u) && u !== botUserId))
+            );
+            const resolvedNames = await Promise.all(
+              uniqueUserIds.map(async (uid) => [uid, ensureNim(await getUserDisplayName(uid))] as const)
+            );
+            const userNameById = new Map<string, string>(resolvedNames);
+            const channelContext = convertToChannelContext(channelMessages, botUserId, event.thread_ts, userNameById);
+            console.log(`Loaded channel context: ${channelContext.length} characters`);
+
+            const options: GenerateResponseOptions = {
+              conversationHistory,
+              channelContext: channelContext || undefined,
+              requesterDisplayName,
+              ...(eventImages.length > 0 ? { images: eventImages } : {}),
+            };
+            const aiResponse = await generateResponse(userMessage, options);
+
+            await sendSlackMessage(event.channel, aiResponse, threadTs);
+            console.log(`Response sent to channel ${event.channel}`);
+          } catch (error) {
+            console.error("Error processing Slack event in background:", error);
           }
-        }
-
-        // 스레드 대화 기록 변환
-        const conversationHistory = event.thread_ts
-          ? await convertToConversationHistory(threadMessages, botUserId, event.ts)
-          : [];
-
-        if (event.thread_ts) {
-          console.log(`Loaded ${conversationHistory.length} messages from thread`);
-        }
-        const uniqueUserIds = Array.from(
-          new Set(
-            channelMessages
-              .map((m) => m.user)
-              .filter((u) => Boolean(u) && u !== botUserId)
-          )
-        );
-        const resolvedNames = await Promise.all(
-          uniqueUserIds.map(async (uid) => [uid, ensureNim(await getUserDisplayName(uid))] as const)
-        );
-        const userNameById = new Map<string, string>(resolvedNames);
-        const channelContext = convertToChannelContext(
-          channelMessages,
-          botUserId,
-          event.thread_ts,
-          userNameById
-        );
-        console.log(
-          `Loaded channel context: ${channelContext.length} characters`
-        );
-
-        // AI 응답 생성 (스레드 대화 기록 + 채널 컨텍스트 + 이미지 포함)
-        const options: GenerateResponseOptions = {
-          conversationHistory,
-          channelContext: channelContext || undefined,
-          requesterDisplayName,
-          ...(eventImages.length > 0 ? { images: eventImages } : {}),
-        };
-        const aiResponse = await generateResponse(userMessage, options);
-
-        // Slack에 응답 전송 (스레드로 답장)
-        await sendSlackMessage(event.channel, aiResponse, threadTs);
-
-        console.log(`Response sent to channel ${event.channel}`);
+        });
       }
     }
 
