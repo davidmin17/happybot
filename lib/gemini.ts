@@ -50,13 +50,10 @@ export interface ChatMessage {
 // ChatMessage를 Gemini Content 형식으로 변환
 function convertToGeminiHistory(messages: ChatMessage[]): Content[] {
   return messages.map((msg) => {
-    const parts: Part[] = [];
-    if (msg.content) parts.push({ text: msg.content });
-    if (msg.images) {
-      for (const img of msg.images) {
-        parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
-      }
-    }
+    const parts: Part[] = [
+      ...(msg.content ? [{ text: msg.content }] : []),
+      ...(msg.images ?? []).map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } })),
+    ];
     return {
       role: msg.role === "assistant" ? "model" : "user",
       parts,
@@ -93,13 +90,10 @@ export async function generateResponse(
     });
 
     // 현재 메시지 파츠 구성 (텍스트 + 이미지)
-    const messageParts: Part[] = [];
-    if (userMessage) messageParts.push({ text: userMessage });
-    if (images) {
-      for (const img of images) {
-        messageParts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
-      }
-    }
+    const messageParts: Part[] = [
+      ...(userMessage ? [{ text: userMessage }] : []),
+      ...(images ?? []).map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } })),
+    ];
 
     // 대화 기록이 있으면 채팅 세션 사용
     if (conversationHistory.length > 0) {

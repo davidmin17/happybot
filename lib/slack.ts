@@ -153,7 +153,6 @@ export function extractMessage(text: string, botUserId: string): string {
   return text.replaceAll(`<@${botUserId}>`, "").trim();
 }
 
-// Slack 파일 다운로드 (봇 토큰 인증 필요)
 export async function downloadSlackFile(
   url: string
 ): Promise<{ data: string; mimeType: string } | null> {
@@ -175,7 +174,16 @@ export async function downloadSlackFile(
   return { data, mimeType };
 }
 
-// Slack 이벤트 타입 정의
+export async function downloadImages(
+  files: SlackFile[] | undefined
+): Promise<Array<{ mimeType: string; data: string }>> {
+  if (!files) return [];
+  const imageFiles = files.filter((f) => f.mimetype?.startsWith("image/"));
+  const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
+  return downloaded.filter((img): img is { mimeType: string; data: string } => img !== null);
+}
+
+
 export interface SlackEvent {
   type: string;
   event?: {

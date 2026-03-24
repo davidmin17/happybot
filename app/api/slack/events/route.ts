@@ -7,21 +7,14 @@ import {
   getThreadMessages,
   getChannelHistory,
   getUserDisplayName,
-  downloadSlackFile,
+  downloadImages,
   SlackEvent,
   SlackMessage,
 } from "@/lib/slack";
 
-// 중복 이벤트 방지를 위한 Set (메모리 저장)
 const processedEvents = new Set<string>();
+setInterval(() => processedEvents.clear(), 60 * 1000);
 
-// 오래된 이벤트 ID 정리 (메모리 누수 방지)
-const EVENT_EXPIRY_MS = 60 * 1000; // 1분
-setInterval(() => {
-  processedEvents.clear();
-}, EVENT_EXPIRY_MS);
-
-// GET: 헬스체크
 export async function GET() {
   return NextResponse.json({
     status: "ok",
@@ -30,7 +23,6 @@ export async function GET() {
   });
 }
 
-// 스레드 메시지를 대화 형식으로 변환 (이미지 다운로드 포함)
 async function convertToConversationHistory(
   messages: SlackMessage[],
   botUserId: string,
@@ -43,31 +35,17 @@ async function convertToConversationHistory(
     if (msg.ts === currentTs) continue;
 
     const cleanText = extractMessage(msg.text || "", botUserId);
-
-    // 이미지 파일 다운로드
-    const images: Array<{ mimeType: string; data: string }> = [];
-    if (msg.files) {
-      const imageFiles = msg.files.filter((f) => f.mimetype?.startsWith("image/"));
-      const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
-      for (const img of downloaded) {
-        if (img) images.push(img);
-      }
-    }
+    const images = await downloadImages(msg.files);
 
     if (!cleanText && images.length === 0) continue;
 
     const role = msg.bot_id || msg.user === botUserId ? "assistant" : "user";
-    history.push({
-      role,
-      content: cleanText,
-      ...(images.length > 0 ? { images } : {}),
-    });
+    history.push({ role, content: cleanText, ...(images.length > 0 ? { images } : {}) });
   }
 
   return history;
 }
 
-// 채널 메시지를 컨텍스트 문자열로 변환
 function convertToChannelContext(
   messages: SlackMessage[],
   botUserId: string,
@@ -85,7 +63,6 @@ function convertToChannelContext(
     const cleanText = extractMessage(msg.text, botUserId);
     if (!cleanText) continue;
 
-    // 봇의 메시지인지 확인
     const isBot = msg.bot_id || msg.user === botUserId;
     const speaker = isBot ? "해피님" : (userNameById.get(msg.user) || "사용자님");
     contextLines.push(`${speaker}: ${cleanText}`);
@@ -100,40 +77,27 @@ function ensureNim(name: string): string {
   return trimmed.endsWith("님") ? trimmed : `${trimmed}님`;
 }
 
-// POST: Slack 이벤트 수신
 export async function POST(request: NextRequest) {
-  // Slack 재시도 요청 무시
-  const retryNum = request.headers.get("x-slack-retry-num");
-  const retryReason = request.headers.get("x-slack-retry-reason");
-
-  if (retryNum) {
+  if (request.headers.get("x-slack-retry-num")) {
     return NextResponse.json({ ok: true });
   }
 
   try {
     const body: SlackEvent = await request.json();
 
-    // URL Verification (Slack 앱 설정 시 필요)
     if (body.type === "url_verification" && body.challenge) {
       return NextResponse.json({ challenge: body.challenge });
     }
 
-    // 이벤트 콜백 처리
     if (body.type === "event_callback" && body.event) {
       const { event, event_id } = body;
 
-      // 중복 이벤트 방지
       if (event_id && processedEvents.has(event_id)) {
         return NextResponse.json({ ok: true });
       }
+      if (event_id) processedEvents.add(event_id);
 
-      if (event_id) {
-        processedEvents.add(event_id);
-      }
-
-      // app_mention 이벤트 처리
       if (event.type === "app_mention") {
-        // 봇 자신의 메시지는 무시
         const botUserId = process.env.SLACK_BOT_USER_ID || "";
         if (event.user === botUserId) {
           return NextResponse.json({ ok: true });
@@ -158,55 +122,41 @@ export async function POST(request: NextRequest) {
               getChannelHistory(event.channel, 30),
             ]);
 
-            const requesterDisplayName = ensureNim(requesterName);
-            const threadTs = event.thread_ts || event.ts;
-
-            // 현재 메시지의 이미지 다운로드
-            const eventImages: Array<{ mimeType: string; data: string }> = [];
-            if (event.files) {
-              const imageFiles = event.files.filter((f) => f.mimetype?.startsWith("image/"));
-              const downloaded = await Promise.all(imageFiles.map((f) => downloadSlackFile(f.url_private)));
-              for (const img of downloaded) {
-                if (img) eventImages.push(img);
-              }
-            }
-
-            const conversationHistory = event.thread_ts
-              ? await convertToConversationHistory(threadMessages, botUserId, event.ts)
-              : [];
-
             const uniqueUserIds = Array.from(
               new Set(channelMessages.map((m) => m.user).filter((u) => Boolean(u) && u !== botUserId))
             );
-            const resolvedNames = await Promise.all(
-              uniqueUserIds.map(async (uid) => [uid, ensureNim(await getUserDisplayName(uid))] as const)
-            );
+
+            // convertToConversationHistory(이미지 다운로드)와 유저명 조회 병렬 처리
+            const [conversationHistory, resolvedNames] = await Promise.all([
+              event.thread_ts
+                ? convertToConversationHistory(threadMessages, botUserId, event.ts)
+                : Promise.resolve([]),
+              Promise.all(uniqueUserIds.map(async (uid) => [uid, ensureNim(await getUserDisplayName(uid))] as const)),
+            ]);
+
             const userNameById = new Map<string, string>(resolvedNames);
             const channelContext = convertToChannelContext(channelMessages, botUserId, event.thread_ts, userNameById);
 
-            // 현재 메시지에 이미지가 없으면 채널 히스토리에서 최근 이미지 가져오기
+            let eventImages = await downloadImages(event.files);
+
+            // 현재 메시지에 이미지가 없으면 채널 히스토리 최근 3개 메시지에서 탐색
             if (eventImages.length === 0) {
-              const recentChannelImages = channelMessages
+              const recentWithImages = channelMessages
                 .filter((m) => m.files?.some((f) => f.mimetype?.startsWith("image/")))
-                .slice(-3); // 최근 3개 메시지
-              const channelImageFiles = recentChannelImages.flatMap(
-                (m) => m.files?.filter((f) => f.mimetype?.startsWith("image/")) ?? []
-              );
-              const downloaded = await Promise.all(channelImageFiles.map((f) => downloadSlackFile(f.url_private)));
-              for (const img of downloaded) {
-                if (img) eventImages.push(img);
-              }
+                .slice(-3);
+              const channelImages = (await Promise.all(recentWithImages.map((m) => downloadImages(m.files)))).flat();
+              eventImages = channelImages;
             }
 
             const options: GenerateResponseOptions = {
               conversationHistory,
               channelContext: channelContext || undefined,
-              requesterDisplayName,
+              requesterDisplayName: ensureNim(requesterName),
               ...(eventImages.length > 0 ? { images: eventImages } : {}),
             };
             const aiResponse = await generateResponse(userMessage, options);
 
-            await sendSlackMessage(event.channel, aiResponse, threadTs);
+            await sendSlackMessage(event.channel, aiResponse, event.thread_ts || event.ts);
           } catch (error) {
             console.error("Error processing Slack event in background:", error);
           }
@@ -217,9 +167,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true });
   } catch (error) {
     console.error("Error processing Slack event:", error);
-    return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
