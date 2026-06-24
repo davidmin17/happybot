@@ -164,20 +164,37 @@ export async function generateResponse(
       "앗, 뭔가 문제가 생긴 것 같아요. 번거로우시겠지만 다시 한 번만 질문해 주시겠어요? 😅"
     );
   } catch (error: unknown) {
-    console.error("Gemini API error:", error);
+    // 에러 상세(errorDetails)를 펼쳐서 로깅 — 어떤 한도/원인인지 Vercel 로그에서 확인용
+    const err = error as { status?: number; errorDetails?: unknown; message?: string };
+    console.error(
+      "Gemini API error:",
+      err.message,
+      "| status:",
+      err.status,
+      "| details:",
+      JSON.stringify(err.errorDetails ?? null)
+    );
+
+    const message = error instanceof Error ? error.message : "";
 
     // 안전 필터 에러 처리
-    if (error instanceof Error && error.message.includes("SAFETY")) {
+    if (message.includes("SAFETY")) {
       return "음... 그 질문은 조금 민감한 내용이라서 답변드리기 어려워요 😅 다른 주제로 이야기 나눠 보면 어떨까요?";
     }
 
-    // 할당량/요청 한도 초과 (429) 처리
-    if (
-      error instanceof Error &&
-      (error.message.includes("429") ||
-        error.message.includes("Too Many Requests") ||
-        error.message.includes("quota"))
-    ) {
+    // 할당량/요청 한도 초과 (429) 처리 — 일일(RPD) vs 분당(RPM) 구분
+    const is429 =
+      err.status === 429 ||
+      message.includes("429") ||
+      message.includes("Too Many Requests") ||
+      message.includes("quota");
+    if (is429) {
+      // quotaId 등에 PerDay/PerMinute가 들어있어 한도 종류를 판별
+      const haystack = (message + " " + JSON.stringify(err.errorDetails ?? "")).toLowerCase();
+      const isDaily = haystack.includes("perday") || haystack.includes("per day");
+      if (isDaily) {
+        return "앗, 오늘 사용할 수 있는 AI 응답 한도를 다 써버렸어요 😢 한도는 내일 초기화돼요. 급하시면 관리자에게 문의해 주세요!";
+      }
       return "앗, 지금 요청이 너무 많아서 잠시 숨 고르는 중이에요 😅 1~2분 뒤에 다시 불러 주시겠어요?";
     }
 
