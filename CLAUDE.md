@@ -28,6 +28,7 @@ npm run lint      # ESLint 검사
 | `GOOGLE_API_KEY` | Google Gemini API 키 |
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth 토큰 (`xoxb-...`) |
 | `SLACK_BOT_USER_ID` | 봇의 Slack User ID |
+| `GEMINI_MODEL` | (선택) Gemini 모델명. 미설정 시 `gemini-3-flash-preview` |
 
 ## 프로젝트 구조
 

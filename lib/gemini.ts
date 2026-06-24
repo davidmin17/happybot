@@ -26,6 +26,9 @@ export function buildSystemPrompt(channelContext?: string): string {
 ${channelContext}`;
 }
 
+// Gemini 모델명 (환경변수로 설정 가능, 기본값 제공)
+const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
+
 // Gemini 클라이언트 (지연 초기화)
 let genAI: GoogleGenerativeAI | null = null;
 
@@ -85,7 +88,7 @@ export async function generateResponse(
       : "";
     const systemPrompt = buildSystemPrompt(channelContext) + `\n\n오늘 날짜는 ${today}입니다.` + requesterLine;
     const model = client.getGenerativeModel({
-      model: "gemini-3-flash-preview",
+      model: GEMINI_MODEL,
       systemInstruction: systemPrompt,
     });
 
