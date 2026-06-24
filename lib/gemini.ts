@@ -43,6 +43,32 @@ function getGeminiClient(): GoogleGenerativeAI {
   return genAI;
 }
 
+// 일시적 서버 오류(503 등) 시 짧은 백오프로 재시도
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  retries = 2,
+  baseDelayMs = 1000
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const err = error as { status?: number; message?: string };
+      const msg = err.message || "";
+      const transient =
+        err.status === 503 ||
+        msg.includes("503") ||
+        msg.includes("Service Unavailable") ||
+        msg.includes("overloaded");
+      if (!transient || attempt >= retries) throw error;
+
+      const delay = baseDelayMs * (attempt + 1);
+      console.warn(`[Gemini] 일시적 오류(503), ${delay}ms 후 재시도 (${attempt + 1}/${retries})`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 // 대화 메시지 타입
 export interface ChatMessage {
   role: "user" | "assistant";
@@ -104,7 +130,7 @@ export async function generateResponse(
       const chat = model.startChat({
         history: convertToGeminiHistory(conversationHistory),
       });
-      const result = await chat.sendMessage(messageParts);
+      const result = await withRetry(() => chat.sendMessage(messageParts));
       return (
         result.response.text() ||
         "앗, 뭔가 문제가 생긴 것 같아요. 다시 한 번만 질문해 주시겠어요? 😅"
@@ -112,7 +138,7 @@ export async function generateResponse(
     }
 
     // 단일 메시지
-    const result = await model.generateContent(messageParts);
+    const result = await withRetry(() => model.generateContent(messageParts));
     return (
       result.response.text() ||
       "앗, 뭔가 문제가 생긴 것 같아요. 번거로우시겠지만 다시 한 번만 질문해 주시겠어요? 😅"
@@ -134,6 +160,16 @@ export async function generateResponse(
     // 안전 필터 에러 처리
     if (message.includes("SAFETY")) {
       return "음... 그 질문은 조금 민감한 내용이라서 답변드리기 어려워요 😅 다른 주제로 이야기 나눠 보면 어떨까요?";
+    }
+
+    // 일시적 서버 오류 (503) 처리 — 재시도 후에도 실패한 경우
+    if (
+      err.status === 503 ||
+      message.includes("503") ||
+      message.includes("Service Unavailable") ||
+      message.includes("overloaded")
+    ) {
+      return "앗, 지금 AI 서버가 잠시 붐비고 있어요 😅 잠깐 뒤에 다시 불러 주시겠어요?";
     }
 
     // 할당량/요청 한도 초과 (429) 처리 — 일일(RPD) vs 분당(RPM) 구분
