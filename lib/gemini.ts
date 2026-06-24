@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, Content, Part, Tool } from "@google/generative-ai";
+import { GoogleGenerativeAI, Content, Part } from "@google/generative-ai";
 
 // 시스템 프롬프트 - 해피봇의 성격 정의
 const BASE_SYSTEM_PROMPT = `너는 "해피"이라는 이름의 친한 친구야.
@@ -8,9 +8,7 @@ const BASE_SYSTEM_PROMPT = `너는 "해피"이라는 이름의 친한 친구야.
 유머 감각도 있고, 때로는 장난스럽게 대답할 수도 있어.
 사람 이름을 부를 때는 항상 이름 뒤에 "님"을 붙여서 말해. (예: 해피님, 철수님)
 이전 대화와 채널의 최근 대화는 참고용으로만 사용하고, 현재 질문과 직접적으로 관련 있을 때만 활용해.
-현재 질문과 관련이 없다고 판단되면, 새로운 질문이라고 생각하고 이전 맥락에 끌려가지 말고 답변해.
-최신 정보(뉴스, 시세, 날씨, 최근 사건, 변하는 사실 등)가 필요하거나 네가 알고 있는 지식이 오래되었을 수 있는 질문은, 추측하지 말고 웹 검색으로 최신 정보를 확인한 뒤 답변해.
-검색으로 알게 된 사실을 바탕으로 답할 때는 출처를 자연스럽게 언급해줘.`;
+현재 질문과 관련이 없다고 판단되면, 새로운 질문이라고 생각하고 이전 맥락에 끌려가지 말고 답변해.`;
 
 // 채널 컨텍스트를 포함한 시스템 프롬프트 생성
 export function buildSystemPrompt(channelContext?: string): string {
@@ -30,10 +28,6 @@ ${channelContext}`;
 
 // Gemini 모델명 (환경변수로 설정 가능, 기본값 제공)
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
-
-// Google Search grounding 활성화 여부 (기본 on, GEMINI_GROUNDING=false로 비활성화)
-// 할당량(429)이 빡빡하거나 비용 절감이 필요할 때 끌 수 있음
-const GEMINI_GROUNDING = process.env.GEMINI_GROUNDING !== "false";
 
 // Gemini 클라이언트 (지연 초기화)
 let genAI: GoogleGenerativeAI | null = null;
@@ -70,43 +64,6 @@ function convertToGeminiHistory(messages: ChatMessage[]): Content[] {
   });
 }
 
-// Gemini 응답에서 텍스트 + 웹 검색 출처를 추출해 Slack용 문자열로 구성
-function buildAnswerWithSources(result: {
-  response: {
-    text: () => string;
-    candidates?: Array<{
-      groundingMetadata?: {
-        webSearchQueries?: string[];
-        groundingChunks?: Array<{ web?: { uri?: string; title?: string } }>;
-      };
-    }>;
-  };
-}): string {
-  const text = result.response.text();
-  if (!text) return text;
-
-  const grounding = result.response.candidates?.[0]?.groundingMetadata;
-  const queries = grounding?.webSearchQueries ?? [];
-  if (queries.length > 0) {
-    console.log(`[Gemini] 웹 검색 수행: ${queries.join(", ")}`);
-  }
-
-  // 출처 URL을 중복 제거하여 최대 3개까지 Slack 형식으로 첨부
-  const seen = new Set<string>();
-  const sources: string[] = [];
-  for (const chunk of grounding?.groundingChunks ?? []) {
-    const uri = chunk.web?.uri;
-    if (!uri || seen.has(uri)) continue;
-    seen.add(uri);
-    const title = chunk.web?.title || uri;
-    sources.push(`• <${uri}|${title}>`);
-    if (sources.length >= 3) break;
-  }
-
-  if (sources.length === 0) return text;
-  return `${text}\n\n📎 참고한 출처:\n${sources.join("\n")}`;
-}
-
 // AI 응답 생성 옵션
 export interface GenerateResponseOptions {
   conversationHistory?: ChatMessage[];
@@ -134,9 +91,6 @@ export async function generateResponse(
     const model = client.getGenerativeModel({
       model: GEMINI_MODEL,
       systemInstruction: systemPrompt,
-      // Google Search grounding: 최신 정보가 필요할 때 모델이 자동으로 웹 검색 수행
-      // (Gemini 2.0+ 전용 `googleSearch` 도구. SDK 0.24.1 타입에 없어 캐스팅)
-      ...(GEMINI_GROUNDING ? { tools: [{ googleSearch: {} } as unknown as Tool] } : {}),
     });
 
     // 현재 메시지 파츠 구성 (텍스트 + 이미지)
@@ -152,7 +106,7 @@ export async function generateResponse(
       });
       const result = await chat.sendMessage(messageParts);
       return (
-        buildAnswerWithSources(result) ||
+        result.response.text() ||
         "앗, 뭔가 문제가 생긴 것 같아요. 다시 한 번만 질문해 주시겠어요? 😅"
       );
     }
@@ -160,7 +114,7 @@ export async function generateResponse(
     // 단일 메시지
     const result = await model.generateContent(messageParts);
     return (
-      buildAnswerWithSources(result) ||
+      result.response.text() ||
       "앗, 뭔가 문제가 생긴 것 같아요. 번거로우시겠지만 다시 한 번만 질문해 주시겠어요? 😅"
     );
   } catch (error: unknown) {
