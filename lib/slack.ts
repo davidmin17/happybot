@@ -148,9 +148,9 @@ export async function getChannelHistory(
 }
 
 // 멘션에서 사용자 메시지 추출 (봇 멘션 제거)
-export function extractMessage(text: string, botUserId: string): string {
-  // <@U12345> 형태의 멘션 제거
-  return text.replaceAll(`<@${botUserId}>`, "").trim();
+export function extractMessage(text: string | undefined, botUserId: string): string {
+  // <@U12345> 형태의 멘션 제거 (text가 undefined일 수 있어 방어 처리)
+  return (text || "").replaceAll(`<@${botUserId}>`, "").trim();
 }
 
 export async function downloadSlackFile(

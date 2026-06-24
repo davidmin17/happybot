@@ -31,6 +31,10 @@ ${channelContext}`;
 // Gemini 모델명 (환경변수로 설정 가능, 기본값 제공)
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 
+// Google Search grounding 활성화 여부 (기본 on, GEMINI_GROUNDING=false로 비활성화)
+// 할당량(429)이 빡빡하거나 비용 절감이 필요할 때 끌 수 있음
+const GEMINI_GROUNDING = process.env.GEMINI_GROUNDING !== "false";
+
 // Gemini 클라이언트 (지연 초기화)
 let genAI: GoogleGenerativeAI | null = null;
 
@@ -132,7 +136,7 @@ export async function generateResponse(
       systemInstruction: systemPrompt,
       // Google Search grounding: 최신 정보가 필요할 때 모델이 자동으로 웹 검색 수행
       // (Gemini 2.0+ 전용 `googleSearch` 도구. SDK 0.24.1 타입에 없어 캐스팅)
-      tools: [{ googleSearch: {} } as unknown as Tool],
+      ...(GEMINI_GROUNDING ? { tools: [{ googleSearch: {} } as unknown as Tool] } : {}),
     });
 
     // 현재 메시지 파츠 구성 (텍스트 + 이미지)
@@ -165,6 +169,16 @@ export async function generateResponse(
     // 안전 필터 에러 처리
     if (error instanceof Error && error.message.includes("SAFETY")) {
       return "음... 그 질문은 조금 민감한 내용이라서 답변드리기 어려워요 😅 다른 주제로 이야기 나눠 보면 어떨까요?";
+    }
+
+    // 할당량/요청 한도 초과 (429) 처리
+    if (
+      error instanceof Error &&
+      (error.message.includes("429") ||
+        error.message.includes("Too Many Requests") ||
+        error.message.includes("quota"))
+    ) {
+      return "앗, 지금 요청이 너무 많아서 잠시 숨 고르는 중이에요 😅 1~2분 뒤에 다시 불러 주시겠어요?";
     }
 
     throw error;

@@ -23,19 +23,30 @@ export async function GET() {
   });
 }
 
+// 토큰/비용 절감: 과거 이미지는 최근 N개 메시지 분량만 Gemini에 전달
+const MAX_HISTORY_IMAGE_MSGS = 2;
+
 async function convertToConversationHistory(
   messages: SlackMessage[],
   botUserId: string,
   currentTs: string
 ): Promise<ChatMessage[]> {
+  // 현재 메시지 제외
+  const relevant = messages.filter((msg) => msg.ts !== currentTs);
+
+  // 이미지를 다운로드/전달할 메시지를 최근 N개로 한정 (전체 다운로드 방지)
+  const imageMsgTs = new Set(
+    relevant
+      .filter((msg) => msg.files?.some((f) => f.mimetype?.startsWith("image/")))
+      .slice(-MAX_HISTORY_IMAGE_MSGS)
+      .map((msg) => msg.ts)
+  );
+
   const history: ChatMessage[] = [];
 
-  for (const msg of messages) {
-    // 현재 메시지는 제외 (별도로 처리)
-    if (msg.ts === currentTs) continue;
-
-    const cleanText = extractMessage(msg.text || "", botUserId);
-    const images = await downloadImages(msg.files);
+  for (const msg of relevant) {
+    const cleanText = extractMessage(msg.text, botUserId);
+    const images = imageMsgTs.has(msg.ts) ? await downloadImages(msg.files) : [];
 
     if (!cleanText && images.length === 0) continue;
 

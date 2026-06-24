@@ -29,6 +29,7 @@ npm run lint      # ESLint 검사
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth 토큰 (`xoxb-...`) |
 | `SLACK_BOT_USER_ID` | 봇의 Slack User ID |
 | `GEMINI_MODEL` | (선택) Gemini 모델명. 미설정 시 `gemini-3-flash-preview` |
+| `GEMINI_GROUNDING` | (선택) `false`면 웹 검색(grounding) 비활성화. 미설정 시 활성화 |
 
 ## 프로젝트 구조
 
@@ -61,7 +62,8 @@ lib/
 - **채널 이미지**: 현재 메시지에 이미지가 없을 때 채널 히스토리에서 최근 이미지를 찾아 Gemini에 전달 ("위에 이미지 해석해줘" 같은 요청 지원)
 - **유저 캐싱**: 표시 이름 10분 TTL 캐시
 - **이미지 처리**: 메시지에 첨부된 이미지를 Slack API로 다운로드 후 Gemini에 `inlineData`로 전달
-- **웹 검색 (grounding)**: Gemini의 Google Search grounding(`googleSearch` 도구) 활성화. 최신 정보가 필요한 질문은 모델이 자동으로 웹 검색 후 응답하고, 응답 끝에 참고 출처 링크(최대 3개)를 첨부
+- **웹 검색 (grounding)**: Gemini의 Google Search grounding(`googleSearch` 도구). 최신 정보가 필요한 질문은 모델이 자동으로 웹 검색 후 응답하고, 응답 끝에 참고 출처 링크(최대 3개)를 첨부. `GEMINI_GROUNDING=false`로 비활성화 가능
+- **히스토리 이미지 제한**: 스레드 히스토리의 이미지는 토큰/비용 절감을 위해 최근 2개 메시지 분량만 Gemini에 전달 (`MAX_HISTORY_IMAGE_MSGS`)
 
 ### 봇 페르소나
 - 이름: 해피 (Happy)
