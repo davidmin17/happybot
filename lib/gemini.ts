@@ -87,6 +87,7 @@ export async function generateResponse(
       ? `\n\n현재 질문을 한 분은 "${requesterDisplayName}"입니다. 이름을 부를 때는 반드시 "${requesterDisplayName}"처럼 "님"을 붙여서 불러 주세요.`
       : "";
     const systemPrompt = buildSystemPrompt(channelContext) + `\n\n오늘 날짜는 ${today}입니다.` + requesterLine;
+    console.log(`[Gemini] 응답 생성 모델: ${GEMINI_MODEL}`);
     const model = client.getGenerativeModel({
       model: GEMINI_MODEL,
       systemInstruction: systemPrompt,
