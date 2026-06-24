@@ -29,6 +29,9 @@ ${channelContext}`;
 // Gemini 모델명 (환경변수로 설정 가능, 기본값 제공)
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 
+// 폴백 모델: 주 모델이 일시 장애(503 등)일 때 대신 사용 (안정적인 GA 모델 권장)
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash";
+
 // Gemini 클라이언트 (지연 초기화)
 let genAI: GoogleGenerativeAI | null = null;
 
@@ -43,7 +46,19 @@ function getGeminiClient(): GoogleGenerativeAI {
   return genAI;
 }
 
-// 일시적 서버 오류(503 등) 시 짧은 백오프로 재시도
+// 일시적 서버 오류(503/overloaded 등) 판별
+function isTransientError(error: unknown): boolean {
+  const err = error as { status?: number; message?: string };
+  const msg = err.message || "";
+  return (
+    err.status === 503 ||
+    msg.includes("503") ||
+    msg.includes("Service Unavailable") ||
+    msg.includes("overloaded")
+  );
+}
+
+// 일시적 서버 오류 시 짧은 백오프로 재시도
 async function withRetry<T>(
   fn: () => Promise<T>,
   retries = 2,
@@ -53,14 +68,7 @@ async function withRetry<T>(
     try {
       return await fn();
     } catch (error) {
-      const err = error as { status?: number; message?: string };
-      const msg = err.message || "";
-      const transient =
-        err.status === 503 ||
-        msg.includes("503") ||
-        msg.includes("Service Unavailable") ||
-        msg.includes("overloaded");
-      if (!transient || attempt >= retries) throw error;
+      if (!isTransientError(error) || attempt >= retries) throw error;
 
       const delay = baseDelayMs * (attempt + 1);
       console.warn(`[Gemini] 일시적 오류(503), ${delay}ms 후 재시도 (${attempt + 1}/${retries})`);
@@ -98,6 +106,31 @@ export interface GenerateResponseOptions {
   images?: Array<{ mimeType: string; data: string }>;
 }
 
+// 지정한 모델로 응답 생성 (일시 오류는 withRetry로 흡수)
+async function callModel(
+  modelName: string,
+  systemPrompt: string,
+  messageParts: Part[],
+  conversationHistory: ChatMessage[]
+): Promise<string> {
+  const client = getGeminiClient();
+  const model = client.getGenerativeModel({
+    model: modelName,
+    systemInstruction: systemPrompt,
+  });
+
+  if (conversationHistory.length > 0) {
+    const chat = model.startChat({
+      history: convertToGeminiHistory(conversationHistory),
+    });
+    const result = await withRetry(() => chat.sendMessage(messageParts));
+    return result.response.text();
+  }
+
+  const result = await withRetry(() => model.generateContent(messageParts));
+  return result.response.text();
+}
+
 // AI 응답 생성 (대화 기록 + 채널 컨텍스트 포함)
 export async function generateResponse(
   userMessage: string,
@@ -107,17 +140,11 @@ export async function generateResponse(
     options;
 
   try {
-    const client = getGeminiClient();
     const today = new Date().toLocaleDateString("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "long" });
     const requesterLine = requesterDisplayName
       ? `\n\n현재 질문을 한 분은 "${requesterDisplayName}"입니다. 이름을 부를 때는 반드시 "${requesterDisplayName}"처럼 "님"을 붙여서 불러 주세요.`
       : "";
     const systemPrompt = buildSystemPrompt(channelContext) + `\n\n오늘 날짜는 ${today}입니다.` + requesterLine;
-    console.log(`[Gemini] 응답 생성 모델: ${GEMINI_MODEL}`);
-    const model = client.getGenerativeModel({
-      model: GEMINI_MODEL,
-      systemInstruction: systemPrompt,
-    });
 
     // 현재 메시지 파츠 구성 (텍스트 + 이미지)
     const messageParts: Part[] = [
@@ -125,23 +152,23 @@ export async function generateResponse(
       ...(images ?? []).map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } })),
     ];
 
-    // 대화 기록이 있으면 채팅 세션 사용
-    if (conversationHistory.length > 0) {
-      const chat = model.startChat({
-        history: convertToGeminiHistory(conversationHistory),
-      });
-      const result = await withRetry(() => chat.sendMessage(messageParts));
-      return (
-        result.response.text() ||
-        "앗, 뭔가 문제가 생긴 것 같아요. 다시 한 번만 질문해 주시겠어요? 😅"
-      );
+    // 주 모델 시도 → 일시 장애(503 등)면 폴백 모델로 재시도
+    let text: string;
+    try {
+      console.log(`[Gemini] 응답 생성 모델: ${GEMINI_MODEL}`);
+      text = await callModel(GEMINI_MODEL, systemPrompt, messageParts, conversationHistory);
+    } catch (error) {
+      if (isTransientError(error) && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+        console.warn(`[Gemini] ${GEMINI_MODEL} 일시 장애, 폴백 모델 ${GEMINI_FALLBACK_MODEL}(으)로 재시도`);
+        text = await callModel(GEMINI_FALLBACK_MODEL, systemPrompt, messageParts, conversationHistory);
+      } else {
+        throw error;
+      }
     }
 
-    // 단일 메시지
-    const result = await withRetry(() => model.generateContent(messageParts));
     return (
-      result.response.text() ||
-      "앗, 뭔가 문제가 생긴 것 같아요. 번거로우시겠지만 다시 한 번만 질문해 주시겠어요? 😅"
+      text ||
+      "앗, 뭔가 문제가 생긴 것 같아요. 다시 한 번만 질문해 주시겠어요? 😅"
     );
   } catch (error: unknown) {
     // 에러 상세(errorDetails)를 펼쳐서 로깅 — 어떤 한도/원인인지 Vercel 로그에서 확인용
