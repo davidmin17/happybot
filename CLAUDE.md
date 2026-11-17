@@ -30,6 +30,7 @@ npm run lint      # ESLint 검사
 | `SLACK_BOT_USER_ID` | 봇의 Slack User ID |
 | `GEMINI_MODEL` | (선택) Gemini 모델명. 미설정 시 `gemini-3-flash-preview` |
 | `GEMINI_FALLBACK_MODEL` | (선택) 주 모델 실패(503/타임아웃/429/404) 시 사용할 폴백 모델. 미설정 시 `gemini-3.5-flash-lite` |
+| `GEMINI_THINKING_LEVEL` | (선택) 주 모델 생각 수준(`minimal`/`low`/`medium`/`high`, 모델별 지원 값 다름). 미설정 시 `low`. 폴백 모델은 모델 기본값 사용 |
 
 ## 프로젝트 구조
 

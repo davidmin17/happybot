@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI, Content, Part } from "@google/generative-ai";
+import { GoogleGenerativeAI, Content, GenerationConfig, Part } from "@google/generative-ai";
 
 // 시스템 프롬프트 - 해피봇의 성격 정의
 const BASE_SYSTEM_PROMPT = `너는 "해피"이라는 이름의 친한 친구야.
@@ -39,6 +39,10 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 // 폴백 모델: 주 모델이 장애/타임아웃/한도초과/미지원일 때 대신 사용
 // (gemini-2.5-flash는 deprecated — 2026-12-01부터 gemini-3.5-flash-lite로 라우팅됨)
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash-lite";
+
+// 주 모델 생각(thinking) 수준 — 3.6 Flash 기본 medium, 4 Hydrogen 기본 high라 채팅 응답이 느림.
+// "low"는 3.6/3.8 Flash·3.5 Flash-Lite·4 Hydrogen 모두 지원. 폴백(flash-lite)은 기본값(minimal) 유지
+const GEMINI_THINKING_LEVEL = process.env.GEMINI_THINKING_LEVEL || "low";
 
 // 시간 예산 — 느린 모델이 Vercel 함수 시간(maxDuration=60초)을 다 써서
 // 로그도 응답도 없이 종료되는 것을 막고, 시간 내에 폴백 모델로 넘어가기 위함
@@ -152,10 +156,14 @@ async function callModel(
   systemPrompt: string,
   messageParts: Part[],
   conversationHistory: ChatMessage[],
-  { retries, deadline }: { retries: number; deadline: number }
+  { retries, deadline, thinkingLevel }: { retries: number; deadline: number; thinkingLevel?: string }
 ): Promise<string> {
   const client = getGeminiClient();
-  const model = client.getGenerativeModel({ model: modelName, systemInstruction: systemPrompt });
+  // 구버전 SDK 타입에 thinkingConfig가 없어 캐스팅 (REST에는 그대로 전달됨)
+  const generationConfig = thinkingLevel
+    ? ({ thinkingConfig: { thinkingLevel } } as GenerationConfig)
+    : undefined;
+  const model = client.getGenerativeModel({ model: modelName, systemInstruction: systemPrompt, generationConfig });
 
   if (conversationHistory.length > 0) {
     const chat = model.startChat({
@@ -200,6 +208,7 @@ export async function generateResponse(
       text = await callModel(GEMINI_MODEL, systemPrompt, messageParts, conversationHistory, {
         retries: hasFallback ? 0 : 2,
         deadline: startedAt + (hasFallback ? PRIMARY_BUDGET_MS : TOTAL_BUDGET_MS),
+        thinkingLevel: GEMINI_THINKING_LEVEL,
       });
       console.log(`[Gemini] ${GEMINI_MODEL} 응답 완료 (${Date.now() - startedAt}ms)`);
     } catch (error) {
