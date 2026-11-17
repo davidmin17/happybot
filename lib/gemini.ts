@@ -29,8 +29,13 @@ ${channelContext}`;
 // Gemini 모델명 (환경변수로 설정 가능, 기본값 제공)
 const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 
-// 폴백 모델: 주 모델이 일시 장애(503 등)일 때 대신 사용 (안정적인 GA 모델 권장)
-const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-2.5-flash";
+// 폴백 모델: 주 모델이 장애/타임아웃/한도초과/미지원일 때 대신 사용
+// (gemini-2.5-flash는 deprecated — 2026-12-01부터 gemini-3.5-flash-lite로 라우팅됨)
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash-lite";
+
+// 모델 호출 1회당 타임아웃 — 응답이 느린 모델이 Vercel 함수 시간(maxDuration)을 다 써서
+// 로그도 응답도 없이 종료되는 것을 막고, 시간 내에 폴백 모델로 넘어가기 위함
+const GEMINI_TIMEOUT_MS = 25_000;
 
 // Gemini 클라이언트 (지연 초기화)
 let genAI: GoogleGenerativeAI | null = null;
@@ -55,6 +60,26 @@ function isTransientError(error: unknown): boolean {
     msg.includes("503") ||
     msg.includes("Service Unavailable") ||
     msg.includes("overloaded")
+  );
+}
+
+// 요청 타임아웃(AbortError) 판별
+function isTimeoutError(error: unknown): boolean {
+  const err = error as { name?: string; message?: string };
+  return err.name === "AbortError" || (err.message || "").includes("aborted");
+}
+
+// 폴백 모델로 넘어갈 오류: 일시 장애(503), 타임아웃, 한도 초과(429 — 모델별 한도), 모델 미지원(404)
+function shouldFallback(error: unknown): boolean {
+  const err = error as { status?: number; message?: string };
+  const msg = err.message || "";
+  return (
+    isTransientError(error) ||
+    isTimeoutError(error) ||
+    err.status === 429 ||
+    err.status === 404 ||
+    msg.includes("429") ||
+    msg.includes("404")
   );
 }
 
@@ -114,10 +139,10 @@ async function callModel(
   conversationHistory: ChatMessage[]
 ): Promise<string> {
   const client = getGeminiClient();
-  const model = client.getGenerativeModel({
-    model: modelName,
-    systemInstruction: systemPrompt,
-  });
+  const model = client.getGenerativeModel(
+    { model: modelName, systemInstruction: systemPrompt },
+    { timeout: GEMINI_TIMEOUT_MS }
+  );
 
   if (conversationHistory.length > 0) {
     const chat = model.startChat({
@@ -152,15 +177,21 @@ export async function generateResponse(
       ...(images ?? []).map((img) => ({ inlineData: { mimeType: img.mimeType, data: img.data } })),
     ];
 
-    // 주 모델 시도 → 일시 장애(503 등)면 폴백 모델로 재시도
+    // 주 모델 시도 → 장애/타임아웃/한도초과/미지원이면 폴백 모델로 재시도
     let text: string;
+    const startedAt = Date.now();
     try {
       console.log(`[Gemini] 응답 생성 모델: ${GEMINI_MODEL}`);
       text = await callModel(GEMINI_MODEL, systemPrompt, messageParts, conversationHistory);
+      console.log(`[Gemini] ${GEMINI_MODEL} 응답 완료 (${Date.now() - startedAt}ms)`);
     } catch (error) {
-      if (isTransientError(error) && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
-        console.warn(`[Gemini] ${GEMINI_MODEL} 일시 장애, 폴백 모델 ${GEMINI_FALLBACK_MODEL}(으)로 재시도`);
+      if (shouldFallback(error) && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
+        const err = error as { status?: number; message?: string };
+        console.warn(
+          `[Gemini] ${GEMINI_MODEL} 실패 (${Date.now() - startedAt}ms, status: ${err.status}, ${err.message}) → 폴백 모델 ${GEMINI_FALLBACK_MODEL}(으)로 재시도`
+        );
         text = await callModel(GEMINI_FALLBACK_MODEL, systemPrompt, messageParts, conversationHistory);
+        console.log(`[Gemini] ${GEMINI_FALLBACK_MODEL} 응답 완료 (${Date.now() - startedAt}ms)`);
       } else {
         throw error;
       }
@@ -197,6 +228,11 @@ export async function generateResponse(
       message.includes("overloaded")
     ) {
       return "앗, 지금 AI 서버가 잠시 붐비고 있어요 😅 잠깐 뒤에 다시 불러 주시겠어요?";
+    }
+
+    // 타임아웃 처리 — 폴백 모델까지 응답이 너무 오래 걸린 경우
+    if (isTimeoutError(error)) {
+      return "앗, 답변을 생각하는 데 너무 오래 걸렸어요 😅 질문을 조금 짧게 해서 다시 불러 주시겠어요?";
     }
 
     // 할당량/요청 한도 초과 (429) 처리 — 일일(RPD) vs 분당(RPM) 구분

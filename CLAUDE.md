@@ -29,7 +29,7 @@ npm run lint      # ESLint 검사
 | `SLACK_BOT_TOKEN` | Slack Bot OAuth 토큰 (`xoxb-...`) |
 | `SLACK_BOT_USER_ID` | 봇의 Slack User ID |
 | `GEMINI_MODEL` | (선택) Gemini 모델명. 미설정 시 `gemini-3-flash-preview` |
-| `GEMINI_FALLBACK_MODEL` | (선택) 주 모델 일시 장애(503) 시 사용할 폴백 모델. 미설정 시 `gemini-2.5-flash` |
+| `GEMINI_FALLBACK_MODEL` | (선택) 주 모델 실패(503/타임아웃/429/404) 시 사용할 폴백 모델. 미설정 시 `gemini-3.5-flash-lite` |
 
 ## 프로젝트 구조
 
@@ -63,7 +63,8 @@ lib/
 - **유저 캐싱**: 표시 이름 10분 TTL 캐시
 - **이미지 처리**: 메시지에 첨부된 이미지를 Slack API로 다운로드 후 Gemini에 `inlineData`로 전달
 - **히스토리 이미지 제한**: 스레드 히스토리의 이미지는 토큰/비용 절감을 위해 최근 2개 메시지 분량만 Gemini에 전달 (`MAX_HISTORY_IMAGE_MSGS`)
-- **재시도/폴백**: 일시 장애(503 등)는 백오프(1s, 2s)로 최대 2회 재시도(`withRetry`). 주 모델이 계속 실패하면 `GEMINI_FALLBACK_MODEL`로 자동 전환
+- **재시도/폴백**: 일시 장애(503 등)는 백오프(1s, 2s)로 최대 2회 재시도(`withRetry`). 주 모델이 계속 실패하거나 타임아웃(25초)·한도 초과(429)·모델 미지원(404)이면 `GEMINI_FALLBACK_MODEL`로 자동 전환
+- **실행 시간**: 라우트에 `maxDuration = 60` 명시 (미설정 시 기본값에 걸려 응답 전에 함수가 종료될 수 있음). 처리 중 예외가 나도 Slack에 실패 안내를 남김
 
 ### 봇 페르소나
 - 이름: 해피 (Happy)

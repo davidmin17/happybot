@@ -12,6 +12,11 @@ import {
   SlackMessage,
 } from "@/lib/slack";
 
+// after() 백그라운드 처리까지 포함한 함수 최대 실행 시간(초).
+// 미설정 시 플랜/프로젝트 기본값(짧으면 10~15초)에 걸려 Gemini 응답 전에 강제 종료될 수 있음
+// (주 모델 타임아웃 25초 + 폴백 25초 + Slack 조회/이미지 다운로드 여유)
+export const maxDuration = 60;
+
 const processedEvents = new Set<string>();
 setInterval(() => processedEvents.clear(), 60 * 1000);
 
@@ -170,6 +175,12 @@ export async function POST(request: NextRequest) {
             await sendSlackMessage(event.channel, aiResponse, event.thread_ts || event.ts);
           } catch (error) {
             console.error("Error processing Slack event in background:", error);
+            // 무응답으로 끝나지 않도록 실패 안내라도 남김
+            await sendSlackMessage(
+              event.channel,
+              "앗, 답변을 만드는 중에 문제가 생겼어요 😢 잠시 뒤에 다시 불러 주시겠어요?",
+              event.thread_ts || event.ts
+            ).catch((e) => console.error("Failed to send error message to Slack:", e));
           }
         });
       }
