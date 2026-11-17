@@ -8,7 +8,14 @@ const BASE_SYSTEM_PROMPT = `너는 "해피"이라는 이름의 친한 친구야.
 유머 감각도 있고, 때로는 장난스럽게 대답할 수도 있어.
 사람 이름을 부를 때는 항상 이름 뒤에 "님"을 붙여서 말해. (예: 해피님, 철수님)
 이전 대화와 채널의 최근 대화는 참고용으로만 사용하고, 현재 질문과 직접적으로 관련 있을 때만 활용해.
-현재 질문과 관련이 없다고 판단되면, 새로운 질문이라고 생각하고 이전 맥락에 끌려가지 말고 답변해.`;
+현재 질문과 관련이 없다고 판단되면, 새로운 질문이라고 생각하고 이전 맥락에 끌려가지 말고 답변해.
+
+[답변 원칙 - 반드시 지켜]
+- 너는 인터넷 검색이나 실시간 정보 조회를 할 수 없고, 답변은 지금 이 한 번으로 끝나. 나중에 다시 답변할 수 없어.
+- 그러니 "알아보고 올게요", "검색해 볼게요", "조금만 기다려 주세요", "확인 후 다시 알려드릴게요" 같은 약속은 절대 하지 마.
+- 검색을 부탁받으면 실시간 검색은 못 한다고 솔직하게 말하고, 알고 있는 범위에서 지금 바로 최선의 답을 줘.
+- 가격, 출시 일정, 최신 뉴스처럼 시간이 지나면 바뀌는 정보는 학습 시점 기준이라 지금과 다를 수 있다고 짧게 알려주고, 공식 사이트에서 확인하도록 안내해.
+- 모르거나 확실하지 않은 건 지어내지 말고 모른다고 말해.`;
 
 // 채널 컨텍스트를 포함한 시스템 프롬프트 생성
 export function buildSystemPrompt(channelContext?: string): string {
@@ -33,9 +40,13 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || "gemini-3-flash-preview";
 // (gemini-2.5-flash는 deprecated — 2026-12-01부터 gemini-3.5-flash-lite로 라우팅됨)
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || "gemini-3.5-flash-lite";
 
-// 모델 호출 1회당 타임아웃 — 응답이 느린 모델이 Vercel 함수 시간(maxDuration)을 다 써서
+// 시간 예산 — 느린 모델이 Vercel 함수 시간(maxDuration=60초)을 다 써서
 // 로그도 응답도 없이 종료되는 것을 막고, 시간 내에 폴백 모델로 넘어가기 위함
-const GEMINI_TIMEOUT_MS = 25_000;
+// 주 모델: 시작부터 20초 안에 응답 없으면 폴백 / 폴백 포함 전체: 45초
+const PRIMARY_BUDGET_MS = 20_000;
+const TOTAL_BUDGET_MS = 45_000;
+// 남은 시간이 이보다 적으면 재시도하지 않음
+const MIN_ATTEMPT_MS = 5_000;
 
 // Gemini 클라이언트 (지연 초기화)
 let genAI: GoogleGenerativeAI | null = null;
@@ -83,19 +94,23 @@ function shouldFallback(error: unknown): boolean {
   );
 }
 
-// 일시적 서버 오류 시 짧은 백오프로 재시도
+// 일시적 서버 오류 시 짧은 백오프로 재시도 — 각 시도의 타임아웃은 deadline까지 남은 시간
 async function withRetry<T>(
-  fn: () => Promise<T>,
-  retries = 2,
+  fn: (timeoutMs: number) => Promise<T>,
+  retries: number,
+  deadline: number,
   baseDelayMs = 1000
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fn();
+      return await fn(Math.max(deadline - Date.now(), 1));
     } catch (error) {
-      if (!isTransientError(error) || attempt >= retries) throw error;
-
       const delay = baseDelayMs * (attempt + 1);
+      const remainingAfterDelay = deadline - Date.now() - delay;
+      if (!isTransientError(error) || attempt >= retries || remainingAfterDelay < MIN_ATTEMPT_MS) {
+        throw error;
+      }
+
       console.warn(`[Gemini] 일시적 오류(503), ${delay}ms 후 재시도 (${attempt + 1}/${retries})`);
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -131,28 +146,26 @@ export interface GenerateResponseOptions {
   images?: Array<{ mimeType: string; data: string }>;
 }
 
-// 지정한 모델로 응답 생성 (일시 오류는 withRetry로 흡수)
+// 지정한 모델로 응답 생성 (일시 오류는 retries 횟수만큼 withRetry로 흡수, deadline 넘기면 타임아웃)
 async function callModel(
   modelName: string,
   systemPrompt: string,
   messageParts: Part[],
-  conversationHistory: ChatMessage[]
+  conversationHistory: ChatMessage[],
+  { retries, deadline }: { retries: number; deadline: number }
 ): Promise<string> {
   const client = getGeminiClient();
-  const model = client.getGenerativeModel(
-    { model: modelName, systemInstruction: systemPrompt },
-    { timeout: GEMINI_TIMEOUT_MS }
-  );
+  const model = client.getGenerativeModel({ model: modelName, systemInstruction: systemPrompt });
 
   if (conversationHistory.length > 0) {
     const chat = model.startChat({
       history: convertToGeminiHistory(conversationHistory),
     });
-    const result = await withRetry(() => chat.sendMessage(messageParts));
+    const result = await withRetry((timeout) => chat.sendMessage(messageParts, { timeout }), retries, deadline);
     return result.response.text();
   }
 
-  const result = await withRetry(() => model.generateContent(messageParts));
+  const result = await withRetry((timeout) => model.generateContent(messageParts, { timeout }), retries, deadline);
   return result.response.text();
 }
 
@@ -182,7 +195,12 @@ export async function generateResponse(
     const startedAt = Date.now();
     try {
       console.log(`[Gemini] 응답 생성 모델: ${GEMINI_MODEL}`);
-      text = await callModel(GEMINI_MODEL, systemPrompt, messageParts, conversationHistory);
+      // 폴백이 있으면 주 모델은 재시도 없이 바로 폴백으로 (무료 티어 503 대기 시간 절약)
+      const hasFallback = GEMINI_FALLBACK_MODEL !== GEMINI_MODEL;
+      text = await callModel(GEMINI_MODEL, systemPrompt, messageParts, conversationHistory, {
+        retries: hasFallback ? 0 : 2,
+        deadline: startedAt + (hasFallback ? PRIMARY_BUDGET_MS : TOTAL_BUDGET_MS),
+      });
       console.log(`[Gemini] ${GEMINI_MODEL} 응답 완료 (${Date.now() - startedAt}ms)`);
     } catch (error) {
       if (shouldFallback(error) && GEMINI_FALLBACK_MODEL !== GEMINI_MODEL) {
@@ -190,7 +208,10 @@ export async function generateResponse(
         console.warn(
           `[Gemini] ${GEMINI_MODEL} 실패 (${Date.now() - startedAt}ms, status: ${err.status}, ${err.message}) → 폴백 모델 ${GEMINI_FALLBACK_MODEL}(으)로 재시도`
         );
-        text = await callModel(GEMINI_FALLBACK_MODEL, systemPrompt, messageParts, conversationHistory);
+        text = await callModel(GEMINI_FALLBACK_MODEL, systemPrompt, messageParts, conversationHistory, {
+          retries: 2,
+          deadline: startedAt + TOTAL_BUDGET_MS,
+        });
         console.log(`[Gemini] ${GEMINI_FALLBACK_MODEL} 응답 완료 (${Date.now() - startedAt}ms)`);
       } else {
         throw error;
